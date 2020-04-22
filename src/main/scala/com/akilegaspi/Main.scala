@@ -11,26 +11,7 @@ object MyApp extends App {
 
   type TodoEnv = Console with TodoRepo
 
-  val initializeSqlite: UIO[Connection] = for {
-    connection <-  UIO(DriverManager.getConnection("jdbc:sqlite:ziodemo.db"))
-    _ <- createDb(connection)
-  } yield connection
 
-  val sqliteLayer: Layer[Nothing, Has[Connection]] =
-    ZLayer.fromAcquireRelease(initializeSqlite)(conn => UIO(conn.close()))
-
-  val jdbcLayer: Layer[Nothing, TodoRepo] = sqliteLayer >>> TodoRepo.jdbc
-  
-  val dependencies = Console.live ++ jdbcLayer
-
-  def run(args: List[String]) = (for {
-    _ <- main.provideLayer(dependencies)
-  } yield ()).fold(_ => 1, _ => 0)
-
-  def createDb(connection: Connection): UIO[Unit] = UIO {
-    val statement = connection.createStatement()
-    ()
-  }
 
   val main = for {
     _ <- putStrLn("====================")
@@ -50,9 +31,39 @@ object MyApp extends App {
     }
   } yield ()
 
+  val initializeSqlite: Task[Connection] = for {
+    connection <-  Task(DriverManager.getConnection("jdbc:sqlite:ziodemo.db"))
+    _ <- initializeDbOrNot(connection)
+  } yield connection
+
+  val sqliteLayer: Layer[Throwable, Has[Connection]] =
+    ZLayer.fromAcquireRelease(initializeSqlite)(conn => UIO(conn.close()))
+
+  val jdbcLayer: Layer[Throwable, TodoRepo] = sqliteLayer >>> TodoRepo.jdbc
+
+  def inMemoryLayer(mapRef: Ref[Map[String, Todo]]): Layer[Nothing, TodoRepo] =  ZLayer.succeed(mapRef) >>> TodoRepo.inMemory
+
+  def mainWithInMemoryLayer(mapRef: Ref[Map[String, Todo]]) = main.provideCustomLayer(inMemoryLayer(mapRef))
+
+  val mainWithJDBCLayer = main.provideCustomLayer(jdbcLayer)
+
+  def run(args: List[String]) = (for {
+    ref <- Ref.make(Map.empty[String, Todo])
+    _ <- mainWithInMemoryLayer(ref).forever
+  } yield ()).foldM(e => putStrLn(e.getMessage()).flatMap(_ => UIO.succeed(1)), _ => UIO.succeed(0))
+
+
+  def initializeDbOrNot(connection: Connection): UIO[Unit] = UIO {
+    val dbMeta = connection.getMetaData()
+    val rs = dbMeta.getTables(null, null, "%", null)
+    while(rs.next()){
+      println(rs.getString(3))
+    }
+  }
+
   val getTodoAndPrint: RIO[Console with TodoRepo, Unit] = for {
     _ <- putStrLn("Getting your todo")
-    _ <- putStr("Input the ID of your TODO")
+    _ <- putStr("Input the ID of your TODO: ")
     id <- getStrLn
     todoOp <- TodoRepo.getTodo(id)
     _ <- todoOp match {
@@ -71,7 +82,7 @@ object MyApp extends App {
     _ <- putStrLn(s"Name: $name")
     _ <- putStrLn(s"Description: $desc")
     id <- TodoRepo.putTodo(Todo(name, desc))
-    _ <- putStrLn("The id of your TODO: $id")
+    _ <- putStrLn(s"The id of your TODO: $id")
   } yield ()
 
   def printAllTodos(todos: List[Todo]): RIO[Console, Unit] = ZIO.foreach_(todos.zipWithIndex){ case (todo, index) =>

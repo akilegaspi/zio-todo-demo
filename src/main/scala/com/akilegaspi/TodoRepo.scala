@@ -3,18 +3,15 @@ package com.akilegaspi
 import zio. {
   Has,
   ZLayer,
-  IO
+  RIO,
+  Task,
+  Ref
 }
 import java.sql.Connection
 import com.akilegaspi.Types._
-
 import scala.Exception
 import java.sql.Statement
 import java.{util => ju}
-import zio.Task
-import zio.Queue
-import scala.collection.mutable
-import zio.RIO
 
 
 
@@ -28,19 +25,19 @@ object TodoRepo {
     def getTodo(id: String): Task[Option[Todo]]
   }
 
-  val jdbc: ZLayer[Has[Connection], Nothing, TodoRepo] = ZLayer.fromFunction { connection =>
+  val jdbc: ZLayer[Has[Connection], Throwable, TodoRepo] = ZLayer.fromFunction { connection =>
     new Service {
       def putTodo(data: Todo): Task[String] = Task {
         val id = ju.UUID.randomUUID().toString()
         val statement = connection.get.createStatement()
         statement.setQueryTimeout(30)
-        statement.executeUpdate(s"INSERT INTO todo VALUES(${id}, ${data.name}, ${data.description})")
+        statement.executeUpdate(s"INSERT INTO todo VALUES('${id}', '${data.name}', '${data.description}')")
         id
       }
       def getTodo(id: String): Task[Option[Todo]] = Task {
         val statement = connection.get.createStatement()
-        val result = statement.executeQuery(s"SELECT * FROM todo WHERE id = $id")
-        if(result.first()) {
+        val result = statement.executeQuery(s"SELECT * FROM todo WHERE id = '$id'")
+        if(result.next()) {
           val name = result.getString("name")
           val desc = result.getString("description")
           Some(Todo(name, desc))
@@ -61,29 +58,26 @@ object TodoRepo {
     }
   }
 
-  val inMemory: ZLayer[mutable.Map[String, Todo], Nothing, TodoRepo] = ZLayer.fromFunction { map =>
+  val inMemory: ZLayer[Has[Ref[Map[String, Todo]]], Nothing, TodoRepo] = ZLayer.fromFunction { mapRef =>
     new Service {
-      def putTodo(data: Todo): Task[String] = Task {
-        val id = ju.UUID.randomUUID().toString()
-        map += (id -> data)
-        id
-      }
+      def putTodo(data: Todo): Task[String] = for {
+        id <- Task.effect(ju.UUID.randomUUID().toString())
+        map <- mapRef.get.get
+        _ <- mapRef.get.set(map + (id -> data))
+      } yield id 
 
-      def getTodo(id: String): zio.Task[Option[Todo]] = Task {
-        map.get(id)
-      }
+      def getTodo(id: String): Task[Option[Todo]] =
+        mapRef.get.get.map(_.get(id))
 
-      def listTodos: zio.Task[List[Types.Todo]] = Task {
-        map.toList.map(_._2)
-      }
+      def listTodos: Task[List[Todo]] =
+        mapRef.get.get.map(_.toList.map(_._2))
     }
   }
 
-  val test: ZLayer[Any, Nothing, TodoRepo] = ZLayer.succeed {
+  val test: ZLayer.NoDeps[Nothing, TodoRepo] = ZLayer.succeed {
     new Service {
       def putTodo(data: Todo): Task[String] = Task.succeed("fakeId")
       def getTodo(id: String): Task[Option[Todo]] = Task.succeed(None)
-
       def listTodos: zio.Task[List[Types.Todo]] = Task.succeed(List.empty[Todo])
     }
   }
