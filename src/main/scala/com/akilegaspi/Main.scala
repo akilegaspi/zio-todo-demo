@@ -49,15 +49,22 @@ object MyApp extends App {
 
   def run(args: List[String]) = (for {
     ref <- Ref.make(Map.empty[String, Todo])
-    _ <- mainWithInMemoryLayer(ref).forever
+    _ <- mainWithJDBCLayer.forever
   } yield ()).foldM(e => putStrLn(e.getMessage()).flatMap(_ => UIO.succeed(1)), _ => UIO.succeed(0))
 
 
   def initializeDbOrNot(connection: Connection): UIO[Unit] = UIO {
     val dbMeta = connection.getMetaData()
     val rs = dbMeta.getTables(null, null, "%", null)
+    var tables = List.empty[String]
     while(rs.next()){
-      println(rs.getString(3))
+      tables = tables :+ rs.getString(3)
+    }
+    tables.find(_ == "todo") match {
+      case None =>
+        val stm = connection.createStatement()
+        stm.executeUpdate("CREATE TABLE todo (id string, name string, description string)")
+      case Some(_) => ()
     }
   }
 
